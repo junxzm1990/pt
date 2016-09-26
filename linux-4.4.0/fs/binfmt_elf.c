@@ -49,6 +49,7 @@ DECLARE_PER_CPU(unsigned long, pt_buffer_cpu);
 DECLARE_PER_CPU(bool, pt_running);
 
 extern int pt_buffer_order;
+extern int process_pt_order; 
 
 //end adding by JX
 
@@ -1628,13 +1629,9 @@ static int start_pt(u64 val){
 }
 
 static void init_pt_status(void){
-
-	//fixme
-	//	memset((void*) __this_cpu_read(pt_buffer_cpu), 0, PAGE_SIZE << pt_buffer_order);
-
-	//reset the offset register; 
-	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
+ 
 	//reset the PT status;
+	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
 	wrmsrl_safe(MSR_IA32_PT_STATUS, 0ULL);
 }
 
@@ -1654,7 +1651,8 @@ static int copy_pt(struct task_struct * tsk){
 	if(tsk->pt_info.pt_status == PT_NO || tsk->pt_info.pt_buffer == NULL)
 		return -1;
 
-	size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
+
+	size = SIZE_BY_ORDER(process_pt_order);	
 	rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
 
 	MaskOrTableOffset = ptr & first32;
@@ -1699,8 +1697,8 @@ static int fill_pt_note(struct memelfnote * note){
 	unsigned long pt_buffer; 
 	u64 val; 
 
-	//fix the size of the pt data buffer	
-	size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
+	//fix the size of the pt data buffer
+	size = SIZE_BY_ORDER(process_pt_order);
 	data = vmalloc(size);
 
 	if(!data){ 

@@ -1391,6 +1391,7 @@ static struct tracepoint *exit_pt;
 
 
 int pt_buffer_order = 10;
+int process_pt_order = 12; 
 
 static int pt_error;
 
@@ -1430,9 +1431,6 @@ static int start_pt(u64 val){
 
 static void init_pt_status(void){
 
-	//fixme
-	//	memset((void*) __this_cpu_read(pt_buffer_cpu), 0, PAGE_SIZE << pt_buffer_order);
-
 	//reset the offset register; 
 	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
 	//reset the PT status;
@@ -1455,7 +1453,8 @@ static int copy_pt(struct task_struct * tsk){
 	if(tsk->pt_info.pt_status == PT_NO || tsk->pt_info.pt_buffer == NULL)
 		return -1;
 
-	size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
+	size = SIZE_BY_ORDER(process_pt_order);	
+
 	rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
 
 	MaskOrTableOffset = ptr & first32;
@@ -1505,8 +1504,7 @@ static void probe_sched_process_exec(void * arg, struct task_struct *p, pid_t ol
 		if(p->pt_info.pt_status == PT_NO){
 			size_t size;
 
-			size = (0x1U << pt_buffer_order) * PAGE_SIZE;
-
+			size = SIZE_BY_ORDER(process_pt_order);
 			p->pt_info.pt_buffer = vmalloc(size);
 
 			if(p->pt_info.pt_buffer)
@@ -1587,7 +1585,8 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 	if(parent->pt_info.pt_status != PT_NO){
 		size_t size;
 
-		size = (0x1U << pt_buffer_order) * PAGE_SIZE;
+	
+		size = SIZE_BY_ORDER(process_pt_order);
 
 		//will this really be happening?
 		if(child->pt_info.pt_buffer && child->pt_info.pt_buffer != parent->pt_info.pt_buffer){

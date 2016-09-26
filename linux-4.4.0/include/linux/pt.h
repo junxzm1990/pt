@@ -27,6 +27,9 @@
 #define ADDR0_MASK      (0xfULL << ADDR0_SHIFT)
 #define ADDR1_MASK      (0xfULL << ADDR1_SHIFT)
 
+#define SIZE_BY_ORDER(order) ((1U << order) * PAGE_SIZE)
+
+
 #endif
 
 //end adding by JX
