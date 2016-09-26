@@ -1381,38 +1381,6 @@ static void rlim64_to_rlim(const struct rlimit64 *rlim64, struct rlimit *rlim)
 		rlim->rlim_max = (unsigned long)rlim64->rlim_max;
 }
 
-
-
-/*added by JX
-
-#define MSR_IA32_PT_CTL 0x00000570
-#define MSR_IA32_PT_STATUS 0x00000571
-
-#define MSR_IA32_PT_OUTPUT_BASE 0x0000560
-#define MSR_IA32_PT_OUTPUT_MASK_PTRS 0x00000561
-
-#define TRACE_EN        BIT_ULL(0)
-#define CYC_EN          BIT_ULL(1)
-#define CTL_OS          BIT_ULL(2)
-#define CTL_USER        BIT_ULL(3)
-#define PT_ERROR        BIT_ULL(4)
-#define CR3_FILTER      BIT_ULL(7)
-#define TO_PA           BIT_ULL(8)
-#define MTC_EN          BIT_ULL(9)
-#define TSC_EN          BIT_ULL(10)
-#define DIS_RETC        BIT_ULL(11)
-#define BRANCH_EN       BIT_ULL(13)
-#define MTC_MASK        (0xf << 14)
-#define CYC_MASK        (0xf << 19)
-#define PSB_MASK        (0xf << 24)
-#define ADDR0_SHIFT     32
-#define ADDR1_SHIFT     32
-#define ADDR0_MASK      (0xfULL << ADDR0_SHIFT)
-#define ADDR1_MASK      (0xfULL << ADDR1_SHIFT)
-
-*/
-
-
 DEFINE_PER_CPU(unsigned long, pt_buffer_cpu);
 DEFINE_PER_CPU(bool, pt_running);
 
@@ -1441,8 +1409,8 @@ static int pause_pt(u64 *val){
 	//if pt is running, disable it; 
 	if( tempval & TRACE_EN)
 		return wrmsrl_safe(MSR_IA32_PT_CTL, tempval & ~TRACE_EN);
-	else
-		return 0;
+
+	return 0;
 }
 
 static int start_pt(u64 val){
@@ -1501,7 +1469,6 @@ static int copy_pt(struct task_struct * tsk){
 	if( next_offset > size){
 		unsigned start, offset; 
 		
-
 		for(start = tsk->pt_info.pt_offset, offset = 0 ; start < size; start++, offset++){
 			((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
 		}			
@@ -1515,12 +1482,12 @@ static int copy_pt(struct task_struct * tsk){
 	}
 	else{ 
 		unsigned start, offset; 
-		
+
 		for(start = tsk->pt_info.pt_offset, offset = 0; start < cur_offset; start++, offset++)
 			 ((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
 			
 		//otherwise just copy the pt log and paste
-		tsk->pt_info.pt_offset += cur_offset;
+		tsk->pt_info.pt_offset += start;
 	}
 	
 	return 0;
@@ -1564,33 +1531,6 @@ static void probe_sched_process_exec(void * arg, struct task_struct *p, pid_t ol
 			printk("Process Exec: cannot start PT for this CPU\n");
 			return; 
 		}
-/*
-		if(rdmsrl_safe(MSR_IA32_PT_CTL, &val) < 0){
-			printk("PT status cannot be read\n");
-			return;	
-		}
-
-		if(val & TRACE_EN)
-			wrmsrl_safe(MSR_IA32_PT_CTL, val & ~TRACE_EN);	
-*/
-
-/*
-		val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA |
-                 CYC_EN | TRACE_EN |
-                 MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK | ADDR0_MASK | ADDR1_MASK);
-
-		val |= CTL_USER;
-		val |= TRACE_EN;
-		val |= BRANCH_EN;	
-
-	
-		if(wrmsrl_safe(MSR_IA32_PT_CTL, val) < 0){
-			printk("cannot start PT for this CPU\n");
-			return;
-		}
-*/	
-
-		//mark this CPU as PT enabled; 
 		__this_cpu_write(pt_running, true);
 	}	
 }
@@ -1609,35 +1549,11 @@ static void probe_sched_switch(void *ignore, bool preempt,
 
 		if( pause_pt(&val) < 0 )
 			goto return_pt; 
-		
-/*
-		if(rdmsrl_safe(MSR_IA32_PT_CTL, &val) < 0){
-			//using printk inside schedule will cause race problem 
-			goto return_pt; //make sure the cpu will be put back on line
-		}
-
-		if(val & TRACE_EN) wrmsrl_safe(MSR_IA32_PT_CTL, val & ~TRACE_EN);	
-*/
 
 		init_pt_status();
 
 		if( start_pt(val) < 0 )
 			goto return_pt;
-
-/*
-		val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA |
-				CYC_EN | TRACE_EN |
-				MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK 
-				| ADDR0_MASK | ADDR1_MASK);
-		val |= CTL_USER;
-		val |= TRACE_EN;
-		val |= BRANCH_EN;	
-
-		if(wrmsrl_safe(MSR_IA32_PT_CTL, val) < 0){
-//			printk("cannot start PT for this CPU\n");
-			goto return_pt;
-		}
-*/
 
 		__this_cpu_write(pt_running, true);
 		goto return_pt; 
@@ -1646,79 +1562,15 @@ static void probe_sched_switch(void *ignore, bool preempt,
 	if(pause_pt(&val) < 0)
 		goto return_pt; 
 
-/*
-	rdmsrl_safe(MSR_IA32_PT_CTL, &val);
-
-	if(val & TRACE_EN)
-		wrmsrl_safe(MSR_IA32_PT_CTL, val & ~TRACE_EN);
-*/
-
 	//pt is running and and the previous process has a buffer to store pt log, then the buffer needs to be copied into the previous process
 	if( prev && (prev->signal->rlim + RLIMIT_PTBUF)->rlim_cur && __this_cpu_read(pt_running) && prev->pt_info.pt_status != PT_NO){	
 
 		copy_pt(prev);
-/*
-		u64 ptr; 
-		u64 first32 = 0x00000000ffffffff;
-		u64 last32 = 0xffffffff00000000;
-		
-		u64 MaskOrTableOffset, OutputOffset; 
-
-		unsigned cur_offset; 
-		unsigned size; 
-		unsigned next_offset; 
-
-		size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
-		rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
-
-		MaskOrTableOffset = ptr & first32;
-		OutputOffset = ((ptr & last32) >> 32) & first32;
-
-		cur_offset = MaskOrTableOffset & OutputOffset;
-		next_offset  = prev->pt_info.pt_offset + cur_offset; 
-
-		temp_pt_buffer = __this_cpu_read(pt_buffer_cpu); 
-
-		//if the buffer is short, then overwrite the beginning.
-		if( next_offset > size){
-			// set up the status and the offset.
-			prev->pt_info.pt_status |= PT_OVERWRITE;
-			prev->pt_info.pt_offset = next_offset - size; 
-
-//			((char*)prev->pt_info.pt_buffer)[0] = ((char*) temp_pt_buffer)[0];
-//			((char*)prev->pt_info.pt_buffer)[1] = ((char*) temp_pt_buffer)[1];
-
-		}
-		else{ 
-			//otherwise just copy the pt log and paste
-			prev->pt_info.pt_offset += cur_offset;
-		}
-*/
 
 	}
 
 	init_pt_status();
-
 	start_pt(val);
-
-/*
-	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
-	wrmsrl_safe(MSR_IA32_PT_STATUS, 0ULL);
-*/
-	
-/*
-	val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA | CYC_EN | TRACE_EN |
-			MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK | ADDR0_MASK | ADDR1_MASK);
-
-	val |= CTL_USER;
-	val |= TRACE_EN;
-	val |= BRANCH_EN;	
-	
-	if(wrmsrl_safe(MSR_IA32_PT_CTL, val) < 0){
-//		printk("cannot start PT for this CPU\n");
-		goto return_pt; 
-	}
-*/
 
 return_pt:
 	return; 
@@ -1737,7 +1589,8 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 
 		size = (0x1U << pt_buffer_order) * PAGE_SIZE;
 
-		if(child->pt_info.pt_buffer){
+		//will this really be happening?
+		if(child->pt_info.pt_buffer && child->pt_info.pt_buffer != parent->pt_info.pt_buffer){
 			printk("Warning: The pt buffer is not empty\n");
 			vfree(child->pt_info.pt_buffer);
 			child->pt_info.pt_buffer = NULL; 
@@ -1769,76 +1622,16 @@ static void probe_sched_exit(void * ignore, struct task_struct *tsk){
 
 		if( pause_pt( &val) < 0)
 			goto release_pt; 
-		
-/*
-		rdmsrl_safe(MSR_IA32_PT_CTL, &val);
 
-		//stop the pt 
-		if(val & TRACE_EN)
-			wrmsrl_safe(MSR_IA32_PT_CTL, val & ~TRACE_EN);
-*/
 		copy_pt(tsk);
-/*
-		//read the PT status
-		{
-			u64 ptr; 
-			u64 first32 = 0x00000000ffffffff;
-			u64 last32 = 0xffffffff00000000;
-			u64 MaskOrTableOffset, OutputOffset; 
-
-			unsigned cur_offset; 
-			unsigned size; 
-			unsigned next_offset; 
-
-			size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
-			rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
-
-			MaskOrTableOffset = ptr & first32;
-			OutputOffset = ((ptr & last32) >> 32) & first32;
-
-			cur_offset = MaskOrTableOffset & OutputOffset;
-			next_offset  = tsk->pt_info.pt_offset + cur_offset; 
-
-			//if the buffer is short, then overwrite the beginning.
-			if( next_offset > size){
-				// set up the status and the offset.
-				tsk->pt_info.pt_status |= PT_OVERWRITE;
-				tsk->pt_info.pt_offset = next_offset - size; 
-			}
-			else{ 
-				//otherwise just copy the pt log and paste
-				tsk->pt_info.pt_offset += cur_offset;
-			}
-
-		}
-*/
-
 		init_pt_status(); 
-/*
-		//clear PT status
-		wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS,((1ULL << (PAGE_SHIFT + pt_buffer_order))-1));
-		wrmsrl_safe(MSR_IA32_PT_STATUS, 0ULL);
-*/
 		start_pt(val);
 		
-
-/*
-		//restart PT	
-		val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA | CYC_EN | TRACE_EN |
-				MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK | ADDR0_MASK | ADDR1_MASK);
-		val |= CTL_USER;
-		val |= TRACE_EN;
-		val |= BRANCH_EN;	
-		
-		wrmsrl_safe(MSR_IA32_PT_CTL, val);
-*/
 		printk("In Exit: The offset of the buffer is %x and overwrite %s\n", tsk->pt_info.pt_offset, tsk->pt_info.pt_status & PT_OVERWRITE ? "Yes" : "No");
 
 release_pt: 
 		tsk->pt_info.pt_status = PT_NO;
-
 		vfree(tsk->pt_info.pt_buffer);
-
 		tsk->pt_info.pt_buffer = NULL;
 	}
 }

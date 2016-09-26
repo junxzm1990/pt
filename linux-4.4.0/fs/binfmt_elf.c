@@ -1596,8 +1596,102 @@ static int fill_files_note(struct memelfnote *note)
 }
 
 //added by JX
+static int pause_pt(u64 *val){
 
+	u64 tempval; 
+	//check if PT is started, if not
+	if(rdmsrl_safe(MSR_IA32_PT_CTL, val) < 0)
+		return -1; 
 
+	tempval = *val;
+
+	//if pt is running, disable it; 
+	if( tempval & TRACE_EN)
+		return wrmsrl_safe(MSR_IA32_PT_CTL, tempval & ~TRACE_EN);
+	else
+		return 0;
+}
+
+static int start_pt(u64 val){
+
+	//restart the PT with trace enabled; 
+	val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA |
+			CYC_EN | TRACE_EN |
+			MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK 
+			| ADDR0_MASK | ADDR1_MASK);
+
+	val |= CTL_USER;
+	val |= TRACE_EN;
+	val |= BRANCH_EN;	
+
+	return wrmsrl_safe(MSR_IA32_PT_CTL, val);
+}
+
+static void init_pt_status(void){
+
+	//fixme
+	//	memset((void*) __this_cpu_read(pt_buffer_cpu), 0, PAGE_SIZE << pt_buffer_order);
+
+	//reset the offset register; 
+	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
+	//reset the PT status;
+	wrmsrl_safe(MSR_IA32_PT_STATUS, 0ULL);
+}
+
+static int copy_pt(struct task_struct * tsk){
+
+	u64 ptr; 
+	u64 first32 = 0x00000000ffffffff;
+	u64 last32 = 0xffffffff00000000;
+	u64 MaskOrTableOffset, OutputOffset; 
+
+	unsigned cur_offset; 
+	unsigned size; 
+	unsigned next_offset; 
+	char * temp_pt_buffer; 
+
+	//do one more check
+	if(tsk->pt_info.pt_status == PT_NO || tsk->pt_info.pt_buffer == NULL)
+		return -1;
+
+	size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
+	rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
+
+	MaskOrTableOffset = ptr & first32;
+	OutputOffset = ((ptr & last32) >> 32) & first32;
+
+	cur_offset = MaskOrTableOffset & OutputOffset;
+	next_offset  = tsk->pt_info.pt_offset + cur_offset; 
+	temp_pt_buffer = (char*) __this_cpu_read(pt_buffer_cpu);
+
+	//if the buffer is short, then overwrite the beginning.
+	if( next_offset > size){
+		unsigned start, offset; 
+		
+		for(start = tsk->pt_info.pt_offset, offset = 0 ; start < size; start++, offset++){
+			((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
+		}			
+
+		for(start = 0 ; offset < cur_offset; offset++, start++)
+			((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
+
+		// set up the status and the offset.
+		tsk->pt_info.pt_status |= PT_OVERWRITE;
+		tsk->pt_info.pt_offset = start;  
+	}
+	else{ 
+		unsigned start, offset; 
+
+		for(start = tsk->pt_info.pt_offset, offset = 0; start < cur_offset; start++, offset++)
+			 ((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
+			
+		//otherwise just copy the pt log and paste
+		tsk->pt_info.pt_offset += start;
+	}
+	
+	return 0;
+}
+ 
 static int fill_pt_note(struct memelfnote * note){
 					
 	char * data; 
@@ -1608,66 +1702,32 @@ static int fill_pt_note(struct memelfnote * note){
 	//fix the size of the pt data buffer	
 	size = (0x1U << pt_buffer_order) * PAGE_SIZE; 
 	data = vmalloc(size);
-	if(!data){ return -ENOMEM; } 
+
+	if(!data){ 
+		return -ENOMEM; 
+	} 
+
 	memset(data, 0, size);	 
 
 	if( (current->signal->rlim + RLIMIT_PTBUF)->rlim_cur 
-			&& __this_cpu_read(pt_running) ){
-	
-		u64 base, ptr; 
-		u64 first32 = 0x00000000ffffffff;
-		u64 last32 = 0xffffffff00000000;
-		u64 BasePhyAddr, MaskOrTableOffset, OutputOffset; 
-		int cpunum; 
+			&& __this_cpu_read(pt_running) && current->pt_info.pt_status != PT_NO){
+		if (pause_pt(&val) < 0)
+			goto fill_data;
 
-		if(rdmsrl_safe(MSR_IA32_PT_CTL, &val) < 0){
-			printk("PT status cannot be read\n");
-			return -1;	
-		}
-	
-		//get the cpu number of the current processor; disable preemption	
-		cpunum = get_cpu(); 
-
-		printk("DEBUG DUMP: Process ID %x, pt status %x, pt offset %x\n", current->pid, current->pt_info.pt_status, current->pt_info.pt_offset);
-/*
-		if(val & TRACE_EN)
-			wrmsrl_safe(MSR_IA32_PT_CTL, val & ~TRACE_EN);	
-*/
-
-		pt_buffer = __this_cpu_read(pt_buffer_cpu);
-		printk("DEBUG CORE DUMP: The address for the buffer pt is %x and the buffer size is %x\n", pt_buffer, size);
-		memcpy(data, (void *)pt_buffer, size);
-
-		rdmsrl_safe(MSR_IA32_PT_OUTPUT_BASE, &base);
-		rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr );		
-		BasePhyAddr = base & first32;
-		MaskOrTableOffset = ptr & first32;
-		OutputOffset = ((ptr & last32) >> 32) & first32;
-
-		printk("Debug: the cpu number is %x\n", cpunum);
-		printk("The base physical address of the log buffer is %lu and %lu\n", __pa(pt_buffer), (u32)(BasePhyAddr & (~MaskOrTableOffset)) );
-		printk("The next address to write is %llx\n", MaskOrTableOffset & OutputOffset);
-
-/*
-		val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA |
-				CYC_EN | TRACE_EN |
-				MTC_EN | MTC_MASK | CYC_MASK | PSB_MASK | ADDR0_MASK | ADDR1_MASK);
-
-		val |= CTL_USER;
-		val |= TRACE_EN;
-		val |= BRANCH_EN;	
-
-		if(wrmsrl_safe(MSR_IA32_PT_CTL, val) < 0){
-			printk("cannot start PT for this CPU\n");
-			return -1;
-		}
-*/
-		
-		//put the cpu back to be preempt-able
-		put_cpu();
+		copy_pt(current);		
+		init_pt_status();
+		start_pt(val);
 	}
 
+fill_data:
+	if(current->pt_info.pt_buffer && current->pt_info.pt_status != PT_NO)
+		memcpy((void*)data, current->pt_info.pt_buffer, size);
+
+
+	printk("CORE DUMP: The size of log to be dumped is %lu, and overwritten %s\n", current->pt_info.pt_offset, (current->pt_info.pt_status & PT_OVERWRITE) ? "Yes": "No");
+
 	fill_note(note, "CORE", NT_PT, size, data);
+
 	return 0;
 }
 
