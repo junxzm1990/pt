@@ -654,6 +654,12 @@ void do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
+
+
+	//added by JX
+	current->pt_info.pt_status |= PT_STOP;	
+	//end adding by JX
+
 	TASKS_RCU(int tasks_rcu_i);
 
 	profile_task_exit(tsk);

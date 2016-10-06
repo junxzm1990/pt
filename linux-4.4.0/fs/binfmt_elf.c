@@ -1596,6 +1596,8 @@ static int fill_files_note(struct memelfnote *note)
 	return 0;
 }
 
+/*
+
 //added by JX
 static int pause_pt(u64 *val){
 
@@ -1689,16 +1691,22 @@ static int copy_pt(struct task_struct * tsk){
 	
 	return 0;
 }
+
+*/
  
 static int fill_pt_note(struct memelfnote * note){
 					
 	char * data; 
-	unsigned size; 
-	unsigned long pt_buffer; 
-	u64 val; 
+	unsigned size; 	
+	unsigned overwrite, offset; 
+	u64 val;
 
 	//fix the size of the pt data buffer
 	size = SIZE_BY_ORDER(process_pt_order);
+
+	size += sizeof(unsigned);
+	size += sizeof(unsigned);
+
 	data = vmalloc(size);
 
 	if(!data){ 
@@ -1706,9 +1714,7 @@ static int fill_pt_note(struct memelfnote * note){
 	} 
 
 	memset(data, 0, size);	 
-
-	if( (current->signal->rlim + RLIMIT_PTBUF)->rlim_cur 
-			&& __this_cpu_read(pt_running) && current->pt_info.pt_status != PT_NO){
+	if( __this_cpu_read(pt_running) && current->pt_info.pt_status != PT_NO){
 		if (pause_pt(&val) < 0)
 			goto fill_data;
 
@@ -1718,11 +1724,21 @@ static int fill_pt_note(struct memelfnote * note){
 	}
 
 fill_data:
-	if(current->pt_info.pt_buffer && current->pt_info.pt_status != PT_NO)
-		memcpy((void*)data, current->pt_info.pt_buffer, size);
+	if(current->pt_info.pt_buffer && current->pt_info.pt_status != PT_NO){
 
+		overwrite = (current->pt_info.pt_status & PT_OVERWRITE) ? 1:0; 
+		offset = current->pt_info.pt_offset; 	
 
-	printk("CORE DUMP: The size of log to be dumped is %lu, and overwritten %s\n", current->pt_info.pt_offset, (current->pt_info.pt_status & PT_OVERWRITE) ? "Yes": "No");
+		//set up mark of overwrite		
+		memcpy( (void*)data, &overwrite, sizeof(unsigned));
+
+		//set up offset of pt log
+		memcpy( (void*)(data + sizeof(unsigned)), &offset, sizeof(unsigned));
+
+		access_process_vm(current, (unsigned long)current->pt_info.pt_buffer, (void*)(data + sizeof(unsigned) + sizeof(unsigned)), size - sizeof(unsigned) - sizeof(unsigned), 0);
+	}
+
+	printk("CORE DUMP: The size of log to be dumped is %u, and overwritten %s\n", current->pt_info.pt_offset, (current->pt_info.pt_status & PT_OVERWRITE) ? "Yes": "No");
 
 	fill_note(note, "CORE", NT_PT, size, data);
 

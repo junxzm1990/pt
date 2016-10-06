@@ -71,7 +71,8 @@ struct sched_param {
 #define PT_START	0x01	
 #define PT_STOP		0x02
 #define PT_OVERWRITE	0x04
-
+#define PT_VFORK	0x08
+#define PT_VFORK_CHILD	0x10
 //end adding by JX
 
 

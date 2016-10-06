@@ -1071,6 +1071,17 @@ __do_page_fault(struct pt_regs *regs, unsigned long error_code,
 	int fault, major = 0;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
+
+	//added by JX
+
+	if(current->pt_info.pt_status != PT_NO && current->pt_info.pt_buffer != NULL && !(current->pt_info.pt_status & PT_STOP) ){
+		if(address >= (unsigned long) current->pt_info.pt_buffer && address <= (unsigned long)current->pt_info.pt_buffer + 0x1000000)
+			printk("Wrong!!! Page Fault happens in process %d at address %x\n", current->pid, address);
+	}
+	//end adding by JX
+	
+
+
 	tsk = current;
 	mm = tsk->mm;
 

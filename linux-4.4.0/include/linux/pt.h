@@ -2,6 +2,8 @@
 #ifndef __PT_H__
 #define __PT_H__ 
 
+#include <linux/sched.h>
+
 #define MSR_IA32_PT_CTL 0x00000570
 #define MSR_IA32_PT_STATUS 0x00000571
 
@@ -29,6 +31,12 @@
 
 #define SIZE_BY_ORDER(order) ((1U << order) * PAGE_SIZE)
 
+
+
+int pause_pt(u64 *val);
+int start_pt(u64 val);
+void init_pt_status(void);
+int copy_pt(struct task_struct * tsk);
 
 #endif
 

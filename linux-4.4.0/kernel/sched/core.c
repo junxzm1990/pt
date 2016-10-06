@@ -93,6 +93,10 @@
 DEFINE_MUTEX(sched_domains_mutex);
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
+//added by JX
+DECLARE_PER_CPU(bool, pt_running);
+//end adding by JX
+
 static void update_rq_clock_task(struct rq *rq, s64 delta);
 
 void update_rq_clock(struct rq *rq)
@@ -2593,6 +2597,7 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 	}
 
 	tick_nohz_task_switch();
+
 	return rq;
 }
 
@@ -2700,7 +2705,9 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	spin_release(&rq->lock.dep_map, 1, _THIS_IP_);
 
 	/* Here we just switch the register state and the stack. */
+
 	switch_to(prev, next, prev);
+
 	barrier();
 
 	return finish_task_switch(prev);
@@ -3113,6 +3120,14 @@ static void __sched notrace __schedule(bool preempt)
 	rcu_note_context_switch();
 	prev = rq->curr;
 
+	
+//added by JX
+	if(prev->pt_info.pt_status != PT_NO){	
+		trace_sched_switch(preempt, prev, next);
+	}
+//end adding by JX
+
+
 	/*
 	 * do_exit() calls schedule() with preemption disabled as an exception;
 	 * however we must fix that up, otherwise the next task will see an
@@ -3177,7 +3192,8 @@ static void __sched notrace __schedule(bool preempt)
 		rq->curr = next;
 		++*switch_count;
 
-		trace_sched_switch(preempt, prev, next);
+//		trace_sched_switch(preempt, prev, next);
+
 		rq = context_switch(rq, prev, next); /* unlocks the rq */
 		cpu = cpu_of(rq);
 	} else {

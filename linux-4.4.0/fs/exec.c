@@ -1504,6 +1504,12 @@ static int do_execveat_common(int fd, struct filename *filename,
 	struct files_struct *displaced;
 	int retval;
 
+
+	//added by JX
+	current->pt_info.pt_status |= PT_STOP;	
+	//end adding by JX
+
+
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 

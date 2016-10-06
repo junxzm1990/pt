@@ -1398,7 +1398,7 @@ static int pt_error;
 
 
 //0 is success, less than 0 is error; 
-static int pause_pt(u64 *val){
+int pause_pt(u64 *val){
 
 	u64 tempval; 
 	//check if PT is started, if not
@@ -1414,7 +1414,7 @@ static int pause_pt(u64 *val){
 	return 0;
 }
 
-static int start_pt(u64 val){
+int start_pt(u64 val){
 
 	//restart the PT with trace enabled; 
 	val &= ~(TSC_EN | CTL_OS | CTL_USER | CR3_FILTER | DIS_RETC | TO_PA |
@@ -1429,7 +1429,7 @@ static int start_pt(u64 val){
 	return wrmsrl_safe(MSR_IA32_PT_CTL, val);
 }
 
-static void init_pt_status(void){
+void init_pt_status(void){
 
 	//reset the offset register; 
 	wrmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, ((1ULL << (PAGE_SHIFT + pt_buffer_order) )-1) );
@@ -1437,7 +1437,80 @@ static void init_pt_status(void){
 	wrmsrl_safe(MSR_IA32_PT_STATUS, 0ULL);
 }
 
-static int copy_pt(struct task_struct * tsk){
+
+static int munmap_old_buffer(unsigned addr, size_t len){
+	
+	int ret; 
+
+	mm_segment_t fs; 
+
+	fs = get_fs();
+
+	ret = sys_munmap( addr, len );	
+			
+	set_fs(get_ds());
+
+	return ret;	
+}
+
+static void disable_cow(struct task_struct * tsk, unsigned mapaddr){
+
+	struct vm_area_struct *vma;
+
+	vma = find_vma(tsk->mm, (unsigned long)tsk->pt_info.pt_buffer);
+
+	if(!vma || vma->vm_start > (unsigned long)tsk->pt_info.pt_buffer)	
+		return;
+
+	vma->vm_flags |= VM_DONTCOPY;	 
+}
+
+
+static unsigned mmap_new_buffer(size_t size){
+
+	unsigned mapaddr, lockres;			
+	mm_segment_t fs; 
+
+	fs = get_fs();
+	set_fs(get_ds());
+
+	mapaddr = sys_mmap_pgoff((unsigned long)NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);	
+
+	if( !IS_ERR((void*)mapaddr) ) 
+		lockres = sys_mlock ((unsigned long)mapaddr, size);
+
+	set_fs(fs);
+
+	if( !IS_ERR((void*)mapaddr) && !IS_ERR((void*)lockres)){
+		
+		//disable_cow(current, mapaddr);
+		return mapaddr;
+	}
+		
+	return IS_ERR((void*)mapaddr) ? mapaddr : lockres; 
+}
+
+static bool copy_ok(struct task_struct *tsk){
+
+	struct vm_area_struct *vma;
+
+	//pt status 
+	if(tsk->pt_info.pt_status == PT_NO || (tsk->pt_info.pt_status & PT_STOP) ||tsk->pt_info.pt_buffer == NULL)
+		return false; 
+
+	//mm status and task status
+	if(!tsk->mm || tsk->state == TASK_DEAD)
+		return false; 
+
+	//mapping status;
+	vma = find_vma(tsk->mm, (unsigned long)tsk->pt_info.pt_buffer);
+	if(!vma || vma->vm_start > (unsigned long)tsk->pt_info.pt_buffer)	
+		return false; 
+	
+	return true; 
+}
+
+int copy_pt(struct task_struct * tsk){
 
 	u64 ptr; 
 	u64 first32 = 0x00000000ffffffff;
@@ -1449,14 +1522,12 @@ static int copy_pt(struct task_struct * tsk){
 	unsigned next_offset; 
 	char * temp_pt_buffer; 
 
-	//do one more check
-	if(tsk->pt_info.pt_status == PT_NO || tsk->pt_info.pt_buffer == NULL)
-		return -1;
+	if(!copy_ok(tsk))
+		return -1; 
 
 	size = SIZE_BY_ORDER(process_pt_order);	
 
 	rdmsrl_safe(MSR_IA32_PT_OUTPUT_MASK_PTRS, &ptr);
-
 	MaskOrTableOffset = ptr & first32;
 	OutputOffset = ((ptr & last32) >> 32) & first32;
 
@@ -1466,29 +1537,21 @@ static int copy_pt(struct task_struct * tsk){
 
 	//if the buffer is short, then overwrite the beginning.
 	if( next_offset > size){
-		unsigned start, offset; 
-		
-		for(start = tsk->pt_info.pt_offset, offset = 0 ; start < size; start++, offset++){
-			((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
-		}			
 
-		for(start = 0 ; offset < cur_offset; offset++, start++)
-			((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
-
-		// set up the status and the offset.
+		stac();
+		memcpy((char*)tsk->pt_info.pt_buffer + tsk->pt_info.pt_offset,  temp_pt_buffer, size - tsk->pt_info.pt_offset);
+		memcpy((char*)tsk->pt_info.pt_buffer, temp_pt_buffer + size - tsk->pt_info.pt_offset, next_offset - size);
+		clac();
+	
 		tsk->pt_info.pt_status |= PT_OVERWRITE;
-		tsk->pt_info.pt_offset = start;  
+		tsk->pt_info.pt_offset = next_offset - size;  
 	}
 	else{ 
-		unsigned start, offset; 
-
-		for(start = tsk->pt_info.pt_offset, offset = 0; start < cur_offset; start++, offset++)
-			 ((char*)tsk->pt_info.pt_buffer)[start] = temp_pt_buffer[offset];
-			
-		//otherwise just copy the pt log and paste
-		tsk->pt_info.pt_offset += start;
+		stac();
+		memcpy((char*)tsk->pt_info.pt_buffer + tsk->pt_info.pt_offset, temp_pt_buffer, cur_offset);
+		clac();
+		tsk->pt_info.pt_offset += cur_offset;
 	}
-	
 	return 0;
 } 
 
@@ -1496,31 +1559,39 @@ static int copy_pt(struct task_struct * tsk){
 
 static void probe_sched_process_exec(void * arg, struct task_struct *p, pid_t old_pid, struct linux_binprm *bprm){
 
-	u64 val; 
+	u64 val;
+
+	//if you are being exected, then map a new buffer  
 	if( (p->signal->rlim + RLIMIT_PTBUF)->rlim_cur){
-		printk("PT will log this process %x\n", p->pid);
 
-		//allocate pt buffer for this task
-		if(p->pt_info.pt_status == PT_NO){
-			size_t size;
+		size_t size;
+		long mapaddr; 
 
-			size = SIZE_BY_ORDER(process_pt_order);
-			p->pt_info.pt_buffer = vmalloc(size);
+		size = SIZE_BY_ORDER(process_pt_order);
+		mapaddr = mmap_new_buffer(size);
 
-			if(p->pt_info.pt_buffer)
-				p->pt_info.pt_status = PT_START;
+		if( !IS_ERR((void*)mapaddr) ){
+			printk("Exec: Map user space %p to process %d\n",(void*)mapaddr,p->pid);
+			p->pt_info.pt_buffer = (void*)mapaddr; 
+			p->pt_info.pt_status = PT_START;
+			p->pt_info.pt_offset = 0;
 		}
+		else{
+			printk("Exec: Cannot mmap user space to process %d mmap %x\n", p->pid, mapaddr);
+			p->pt_info.pt_buffer = NULL;
+			p->pt_info.pt_status = PT_NO; 
+			p->pt_info.pt_offset = 0;
+		}	
+
 
 		//if this CPU is running pt, do nothing else; 
-		if(__this_cpu_read(pt_running)){
-			printk("EXEC: The pt log for this cpu has started %d and %u \n", current->pt_info.pt_status, current->pt_info.pt_offset);
+		if(__this_cpu_read(pt_running))
 			return;			
-		}		
 
 		//pause pt
 		if( pause_pt( &val ) < 0)
 			return;
-		
+
 		//initialize PT status for this CPU
 		init_pt_status();
 
@@ -1543,7 +1614,7 @@ static void probe_sched_switch(void *ignore, bool preempt,
 
 	//if the PT is not started and the next process must be traced, then just start PT and return; 
 	//this case happens, a traced process is being switched to a new CPU without PT enabled;
-	if( (next->signal->rlim + RLIMIT_PTBUF)->rlim_cur && !__this_cpu_read(pt_running)){
+	if( !__this_cpu_read(pt_running)){
 
 		if( pause_pt(&val) < 0 )
 			goto return_pt; 
@@ -1561,10 +1632,9 @@ static void probe_sched_switch(void *ignore, bool preempt,
 		goto return_pt; 
 
 	//pt is running and and the previous process has a buffer to store pt log, then the buffer needs to be copied into the previous process
-	if( prev && (prev->signal->rlim + RLIMIT_PTBUF)->rlim_cur && __this_cpu_read(pt_running) && prev->pt_info.pt_status != PT_NO){	
 
+	if( prev == current && __this_cpu_read(pt_running)){	
 		copy_pt(prev);
-
 	}
 
 	init_pt_status();
@@ -1574,64 +1644,87 @@ return_pt:
 	return; 
 }
 
-
 static void probe_sched_fork(void *ignore, struct task_struct *parent, struct task_struct * child){
 
-	if(!parent || !child || parent == child)
+	if(parent->pt_info.pt_status == PT_NO || parent->pt_info.pt_buffer == NULL)
 		return;
+
+	child->pt_info.pt_buffer = NULL; //parent->pt_info.pt_buffer; 
+	child->pt_info.pt_status = PT_NO; //parent->pt_info.pt_status;
+	child->pt_info.pt_offset = 0; //parent->pt_info.pt_offset; 
+
+	//the fork copies the page table, so no need to make another mmap 
+	if(parent->mm != child->mm){
+		unsigned mapaddr; 	
+		size_t size; 
+
+		size = SIZE_BY_ORDER(process_pt_order);
+		mapaddr = mmap_new_buffer(size);
+
+		if(!IS_ERR((void*)mapaddr)){
+		
+			stac();	
+			memcpy(mapaddr, parent->pt_info.pt_buffer, size);
+			clac();	
+
+			child->pt_info.pt_buffer = parent->pt_info.pt_buffer; 
+			child->pt_info.pt_status = parent->pt_info.pt_status;
+			child->pt_info.pt_offset = parent->pt_info.pt_offset; 
+
+			parent->pt_info.pt_buffer = mapaddr;	
+		}
+
+		return; 
+	}
 
 	//if the parent is PT enabled, enable PT for the child as well
 	//need a new PT buffer for the child, otherwise the buffer will be mixed
-	if(parent->pt_info.pt_status != PT_NO){
+	{
+
 		size_t size;
+		unsigned mapaddr;			
 
-	
 		size = SIZE_BY_ORDER(process_pt_order);
+		mapaddr = mmap_new_buffer(size);
 
-		//will this really be happening?
-		if(child->pt_info.pt_buffer && child->pt_info.pt_buffer != parent->pt_info.pt_buffer){
-			printk("Warning: The pt buffer is not empty\n");
-			vfree(child->pt_info.pt_buffer);
-			child->pt_info.pt_buffer = NULL; 
-		}
+		if( !IS_ERR((void*)mapaddr) ){
 
-		child->pt_info.pt_buffer = vmalloc(size);
-	
-		if(child->pt_info.pt_buffer){
-			child->pt_info.pt_status = parent->pt_info.pt_status;
-			child->pt_info.pt_offset = parent->pt_info.pt_offset; 
-			memcpy(child->pt_info.pt_buffer, parent->pt_info.pt_buffer, size);
+			child->pt_info.pt_buffer = (void*) mapaddr; 
+
+			if(copy_ok(parent) && copy_ok(child)){
+
+				printk("Fork: map a new area for the parent process %d at %p and old map %p assigned to child process %d\n", parent->pid, parent->pt_info.pt_buffer, mapaddr, child->pid);
+				stac();
+				memcpy((void*) mapaddr, parent->pt_info.pt_buffer, size);
+				clac();
+				
+				child->pt_info.pt_status = parent->pt_info.pt_status;
+				child->pt_info.pt_offset = parent->pt_info.pt_offset; 
+			}
+			else{
+				child->pt_info.pt_status = PT_START;
+				child->pt_info.pt_offset = 0;
+			}
 		}
 	}				
 }
 
 static void probe_sched_exit(void * ignore, struct task_struct *tsk){
 
-	u64 val; 	
-
 	if(!tsk)
 		return;
-		
-	if( (tsk->signal->rlim + RLIMIT_PTBUF)->rlim_cur){
-		printk("In Exit: process %x exits\n", tsk->pid);
-	}
 
-	//print the pt status when a process exits
-	if(tsk->pt_info.pt_status != PT_NO){
+		//print the pt status when a process exits
+	if(tsk->pt_info.pt_status != PT_NO && tsk->pt_info.pt_buffer){
+			printk("Exit: Unmap process %d at offset %u\n", tsk->pid, tsk->pt_info.pt_offset);
 
-		if( pause_pt( &val) < 0)
-			goto release_pt; 
+			if(tsk->pt_info.pt_status & PT_VFORK_CHILD){
+				tsk->parent->pt_info.pt_status = tsk->pt_info.pt_status; 
+				tsk->parent->pt_info.pt_offset = tsk->pt_info.pt_offset; 
+			}
 
-		copy_pt(tsk);
-		init_pt_status(); 
-		start_pt(val);
-		
-		printk("In Exit: The offset of the buffer is %x and overwrite %s\n", tsk->pt_info.pt_offset, tsk->pt_info.pt_status & PT_OVERWRITE ? "Yes" : "No");
-
-release_pt: 
-		tsk->pt_info.pt_status = PT_NO;
-		vfree(tsk->pt_info.pt_buffer);
-		tsk->pt_info.pt_buffer = NULL;
+			tsk->pt_info.pt_status = PT_NO;
+			tsk->pt_info.pt_buffer = NULL;
 	}
 }
 
@@ -1756,12 +1849,14 @@ static int check_intel_pt(void (*probe)(void *, struct task_struct*, pid_t, stru
 		return -EIO;
 	}
 
+	//trace process switch
 	switch_pt = (struct tracepoint*) kallsyms_lookup_name("__tracepoint_sched_switch");
 	
 	if(!switch_pt){
 		printk("Warning: Cannot register switch traceevent\n");
 		return -EIO; 
 	}
+
 	
 
 	//trace exit of process
@@ -1808,8 +1903,6 @@ static void free_all_buffers(void){
 	}
 
 	put_online_cpus();
-
-	
 }
 	
 static int release_intel_pt(void (*probe)(void *, struct task_struct*, pid_t, struct linux_binprm*)){

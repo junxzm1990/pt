@@ -21,6 +21,10 @@ unsigned long __must_check __copy_from_user_ll_nocache
 unsigned long __must_check __copy_from_user_ll_nocache_nozero
 		(void *to, const void __user *from, unsigned long n);
 
+unsigned long __copy_user_intel(void __user *to, const void* from, unsigned long size);
+unsigned long __copy_user_zeroing_intel(void __user *to, const void __user *from, unsigned long size);
+
+
 /**
  * __copy_to_user_inatomic: - Copy a block of data into user space, with less checking.
  * @to:   Destination address, in user space.

@@ -87,6 +87,14 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
+
+//added by JX
+#include <linux/pt.h>
+DECLARE_PER_CPU(bool, pt_running);
+
+extern int process_pt_order; 
+//end adding by JX
+
 #ifdef CONFIG_USER_NS
 extern int unprivileged_userns_clone;
 #else
@@ -462,8 +470,21 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 		tmp->vm_mm = mm;
 		if (anon_vma_fork(tmp, mpnt))
 			goto fail_nomem_anon_vma_fork;
-		tmp->vm_flags &=
-			~(VM_LOCKED|VM_LOCKONFAULT|VM_UFFD_MISSING|VM_UFFD_WP);
+
+
+
+
+
+		//added by JX
+		if(current->pt_info.pt_status != PT_NO && mpnt->vm_start <= (unsigned long)current->pt_info.pt_buffer && mpnt->vm_end >= (unsigned long)current->pt_info.pt_buffer + SIZE_BY_ORDER(process_pt_order)){
+			tmp->vm_flags &= ~(VM_UFFD_MISSING|VM_UFFD_WP);
+		}
+		//end adding by JX
+
+		else{
+			tmp->vm_flags &= ~(VM_LOCKED|VM_LOCKONFAULT|VM_UFFD_MISSING|VM_UFFD_WP);
+		}
+
 		tmp->vm_next = tmp->vm_prev = NULL;
 		tmp->vm_userfaultfd_ctx = NULL_VM_UFFD_CTX;
 		file = tmp->vm_file;
@@ -1719,6 +1740,28 @@ long _do_fork(unsigned long clone_flags,
 	 * requested, no event is reported; otherwise, report if the event
 	 * for the type of forking is enabled.
 	 */
+
+	//added by JX
+	//please disable preemption at first
+	//make sure the pt buffer in the previous time interval do not disappear
+
+	preempt_disable();
+
+	current->pt_info.pt_status |= PT_STOP;
+
+	if(__this_cpu_read(pt_running)){
+		u64 val;
+
+		if(pause_pt(&val) >= 0){
+			copy_pt(current);
+			init_pt_status();
+			start_pt(val);
+		}
+	}
+	preempt_enable();
+
+	//end adding by JX
+
 	if (!(clone_flags & CLONE_UNTRACED)) {
 		if (clone_flags & CLONE_VFORK)
 			trace = PTRACE_EVENT_VFORK;
@@ -1741,6 +1784,10 @@ long _do_fork(unsigned long clone_flags,
 		struct completion vfork;
 		struct pid *pid;
 
+		//added by JX
+		unsigned t_pt_status;
+		//end adding by JX
+
 		trace_sched_process_fork(current, p);
 
 		pid = get_task_pid(p, PIDTYPE_PID);
@@ -1750,6 +1797,22 @@ long _do_fork(unsigned long clone_flags,
 			put_user(nr, parent_tidptr);
 
 		if (clone_flags & CLONE_VFORK) {
+
+			//added by JX
+			t_pt_status = current->pt_info.pt_status; 
+
+			if(current->pt_info.pt_status != PT_NO)
+			{
+				printk("Fork: Parent status %d child status %d\n", current->pt_info.pt_status, p->pt_info.pt_status);
+				
+				p->pt_info.pt_status = (current->pt_info.pt_status | PT_VFORK_CHILD) & (~PT_STOP);
+				p->pt_info.pt_buffer = current->pt_info.pt_buffer;
+				p->pt_info.pt_offset = current->pt_info.pt_offset;
+				
+				current->pt_info.pt_status = PT_NO; 
+			}
+			//end adding by JX
+			
 			p->vfork_done = &vfork;
 			init_completion(&vfork);
 			get_task_struct(p);
@@ -1764,12 +1827,21 @@ long _do_fork(unsigned long clone_flags,
 		if (clone_flags & CLONE_VFORK) {
 			if (!wait_for_vfork_done(p, &vfork))
 				ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+			
+			//added by JX
+			current->pt_info.pt_status = t_pt_status;
+			//end adding by JX
 		}
 
 		put_pid(pid);
 	} else {
 		nr = PTR_ERR(p);
 	}
+
+	//added by JX
+	current->pt_info.pt_status &= (~PT_STOP);
+	//end adding by JX
+
 	return nr;
 }
 

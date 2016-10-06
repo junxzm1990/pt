@@ -97,7 +97,7 @@ __clear_user(void __user *to, unsigned long n)
 EXPORT_SYMBOL(__clear_user);
 
 #ifdef CONFIG_X86_INTEL_USERCOPY
-static unsigned long
+unsigned long
 __copy_user_intel(void __user *to, const void *from, unsigned long size)
 {
 	int d0, d1;
@@ -201,7 +201,10 @@ __copy_user_intel(void __user *to, const void *from, unsigned long size)
 	return size;
 }
 
-static unsigned long
+EXPORT_SYMBOL(__copy_user_intel);
+
+
+unsigned long
 __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 {
 	int d0, d1;
@@ -292,6 +295,7 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 		       : "eax", "edx", "memory");
 	return size;
 }
+EXPORT_SYMBOL(__copy_user_zeroing_intel);
 
 /*
  * Non Temporal Hint version of __copy_user_zeroing_intel.  It is cache aware.
