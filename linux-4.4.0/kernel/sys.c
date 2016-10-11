@@ -1495,7 +1495,7 @@ static bool copy_ok(struct task_struct *tsk){
 	struct vm_area_struct *vma;
 
 	//pt status 
-	if(tsk->pt_info.pt_status == PT_NO || (tsk->pt_info.pt_status & PT_STOP) ||tsk->pt_info.pt_buffer == NULL)
+	if(tsk->pt_info.pt_status == PT_NO || (tsk->pt_info.pt_status & PT_STOP) || tsk->pt_info.pt_buffer == NULL)
 		return false; 
 
 	//mm status and task status
@@ -1571,18 +1571,17 @@ static void probe_sched_process_exec(void * arg, struct task_struct *p, pid_t ol
 		mapaddr = mmap_new_buffer(size);
 
 		if( !IS_ERR((void*)mapaddr) ){
-			printk("Exec: Map user space %p to process %d\n",(void*)mapaddr,p->pid);
+//			printk("Exec: Map user space %p to process %d\n",(void*)mapaddr,p->pid);
 			p->pt_info.pt_buffer = (void*)mapaddr; 
 			p->pt_info.pt_status = PT_START;
 			p->pt_info.pt_offset = 0;
 		}
 		else{
-			printk("Exec: Cannot mmap user space to process %d mmap %x\n", p->pid, mapaddr);
+			printk("Exec: Cannot mmap user space to process %d mmap %lx\n", p->pid, mapaddr);
 			p->pt_info.pt_buffer = NULL;
 			p->pt_info.pt_status = PT_NO; 
 			p->pt_info.pt_offset = 0;
 		}	
-
 
 		//if this CPU is running pt, do nothing else; 
 		if(__this_cpu_read(pt_running))
@@ -1633,7 +1632,7 @@ static void probe_sched_switch(void *ignore, bool preempt,
 
 	//pt is running and and the previous process has a buffer to store pt log, then the buffer needs to be copied into the previous process
 
-	if( prev == current && __this_cpu_read(pt_running)){	
+	if( prev == current){	
 		copy_pt(prev);
 	}
 
@@ -1664,14 +1663,18 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 		if(!IS_ERR((void*)mapaddr)){
 		
 			stac();	
-			memcpy(mapaddr, parent->pt_info.pt_buffer, size);
+//			memcpy((void*)mapaddr, parent->pt_info.pt_buffer, size);
+			if(parent->pt_info.pt_status & PT_OVERWRITE)
+				memcpy((void*)mapaddr, parent->pt_info.pt_buffer, size);
+			else
+				memcpy((void*)mapaddr, parent->pt_info.pt_buffer, PAGE_ALIGN(parent->pt_info.pt_offset));
 			clac();	
 
 			child->pt_info.pt_buffer = parent->pt_info.pt_buffer; 
 			child->pt_info.pt_status = parent->pt_info.pt_status;
 			child->pt_info.pt_offset = parent->pt_info.pt_offset; 
 
-			parent->pt_info.pt_buffer = mapaddr;	
+			parent->pt_info.pt_buffer = (void*)mapaddr;	
 		}
 
 		return; 
@@ -1693,9 +1696,14 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 
 			if(copy_ok(parent) && copy_ok(child)){
 
-				printk("Fork: map a new area for the parent process %d at %p and old map %p assigned to child process %d\n", parent->pid, parent->pt_info.pt_buffer, mapaddr, child->pid);
 				stac();
-				memcpy((void*) mapaddr, parent->pt_info.pt_buffer, size);
+//				memcpy((void*) mapaddr, parent->pt_info.pt_buffer, size);
+
+				if(parent->pt_info.pt_status & PT_OVERWRITE)
+					memcpy((void*)mapaddr, parent->pt_info.pt_buffer, size);
+				else
+					memcpy((void*)mapaddr, parent->pt_info.pt_buffer, PAGE_ALIGN(parent->pt_info.pt_offset));
+
 				clac();
 				
 				child->pt_info.pt_status = parent->pt_info.pt_status;
@@ -1716,7 +1724,7 @@ static void probe_sched_exit(void * ignore, struct task_struct *tsk){
 
 		//print the pt status when a process exits
 	if(tsk->pt_info.pt_status != PT_NO && tsk->pt_info.pt_buffer){
-			printk("Exit: Unmap process %d at offset %u\n", tsk->pid, tsk->pt_info.pt_offset);
+//			printk("Exit: Unmap process %d at offset %u\n", tsk->pid, tsk->pt_info.pt_offset);
 
 			if(tsk->pt_info.pt_status & PT_VFORK_CHILD){
 				tsk->parent->pt_info.pt_status = tsk->pt_info.pt_status; 
@@ -1773,7 +1781,7 @@ static void pt_cpu_init(void* arg){
 	
 	pt_buffer = __this_cpu_read(pt_buffer_cpu);
 
-	printk("The logical address of the PT buffer is %lx\n", pt_buffer);
+//	printk("The logical address of the PT buffer is %lx\n", pt_buffer);
 	
 	wrmsrl_safe(MSR_IA32_PT_OUTPUT_BASE, __pa(pt_buffer));
 	
@@ -1839,7 +1847,6 @@ static int check_intel_pt(void (*probe)(void *, struct task_struct*, pid_t, stru
 		return -EIO;	
 	}
 	
-	 
 
 	//trace fork of process
 	fork_pt =  (struct tracepoint*) kallsyms_lookup_name("__tracepoint_sched_process_fork");	 
@@ -1856,7 +1863,6 @@ static int check_intel_pt(void (*probe)(void *, struct task_struct*, pid_t, stru
 		printk("Warning: Cannot register switch traceevent\n");
 		return -EIO; 
 	}
-
 	
 
 	//trace exit of process
@@ -1868,8 +1874,11 @@ static int check_intel_pt(void (*probe)(void *, struct task_struct*, pid_t, stru
 	}
 
 	tracepoint_probe_register(exec_pt, (void*)probe, NULL); 
+
 	tracepoint_probe_register(fork_pt, (void*)probe_sched_fork, NULL);
+
 	tracepoint_probe_register(switch_pt, (void*)probe_sched_switch, NULL);
+
 	tracepoint_probe_register(exit_pt, (void*)probe_sched_exit, NULL); 
 
 	return 0;
@@ -2010,7 +2019,7 @@ out:
 //added by JX
 	if(!retval && new_rlim && resource == RLIMIT_PTBUF)
 	{
-		printk("Set PT buffer rlimit\n");
+//		printk("Set PT buffer rlimit\n");
 
 		if(no_lim && new_rlim->rlim_cur > 0)
 			check_intel_pt(probe_sched_process_exec);

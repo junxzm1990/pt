@@ -1745,6 +1745,7 @@ long _do_fork(unsigned long clone_flags,
 	//please disable preemption at first
 	//make sure the pt buffer in the previous time interval do not disappear
 
+
 	preempt_disable();
 
 	current->pt_info.pt_status |= PT_STOP;
@@ -1803,7 +1804,7 @@ long _do_fork(unsigned long clone_flags,
 
 			if(current->pt_info.pt_status != PT_NO)
 			{
-				printk("Fork: Parent status %d child status %d\n", current->pt_info.pt_status, p->pt_info.pt_status);
+				//printk("Fork: Parent status %d child status %d\n", current->pt_info.pt_status, p->pt_info.pt_status);
 				
 				p->pt_info.pt_status = (current->pt_info.pt_status | PT_VFORK_CHILD) & (~PT_STOP);
 				p->pt_info.pt_buffer = current->pt_info.pt_buffer;
