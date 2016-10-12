@@ -1748,7 +1748,6 @@ long _do_fork(unsigned long clone_flags,
 
 	preempt_disable();
 
-	current->pt_info.pt_status |= PT_STOP;
 
 	if(__this_cpu_read(pt_running)){
 		u64 val;
@@ -1759,6 +1758,8 @@ long _do_fork(unsigned long clone_flags,
 			start_pt(val);
 		}
 	}
+
+	current->pt_info.pt_status |= PT_STOP;
 	preempt_enable();
 
 	//end adding by JX

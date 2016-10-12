@@ -1424,7 +1424,9 @@ int start_pt(u64 val){
 
 	val |= CTL_USER;
 	val |= TRACE_EN;
-	val |= BRANCH_EN;	
+	val |= BRANCH_EN;
+//temp add
+	val |= DIS_RETC; 	
 
 	return wrmsrl_safe(MSR_IA32_PT_CTL, val);
 }
@@ -1534,6 +1536,14 @@ int copy_pt(struct task_struct * tsk){
 	cur_offset = MaskOrTableOffset & OutputOffset;
 	next_offset  = tsk->pt_info.pt_offset + cur_offset; 
 	temp_pt_buffer = (char*) __this_cpu_read(pt_buffer_cpu);
+
+//temp add
+	if(size == 0 )
+		return 0;
+
+	printk("COPY_PT: Process %d pt size %lx and size to load %lx\n", tsk->pid, tsk->pt_info.pt_offset, cur_offset);
+//end adding temp
+
 
 	//if the buffer is short, then overwrite the beginning.
 	if( next_offset > size){
