@@ -1718,9 +1718,16 @@ static int fill_pt_note(struct memelfnote * note){
 		if (pause_pt(&val) < 0)
 			goto fill_data;
 
+		
+		printk("DUMP: Get data from PT\n");
+
+		preempt_disable();
 		copy_pt(current);		
 		init_pt_status();
 		start_pt(val);
+		preempt_enable();
+	
+		printk("DUMP: finish get data from PT\n");
 	}
 
 fill_data:

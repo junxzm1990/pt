@@ -1390,20 +1390,25 @@ static struct tracepoint *fork_pt;
 static struct tracepoint *exit_pt; 
 
 
-int pt_buffer_order = 10;
-int process_pt_order = 12; 
+int pt_buffer_order = 12;
+int process_pt_order = 13; 
 
 static int pt_error;
-
-
 
 //0 is success, less than 0 is error; 
 int pause_pt(u64 *val){
 
+	u64 status; 
 	u64 tempval; 
+
+	rdmsrl_safe(MSR_IA32_PT_STATUS, &status);
+	if(status & PT_ERROR){
+			printk("PT error happend %llx\n", status);
+	}
+
 	//check if PT is started, if not
 	if(rdmsrl_safe(MSR_IA32_PT_CTL, val) < 0)
-		return -1; 
+		return -1;
 
 	tempval = *val;
 
@@ -1425,8 +1430,6 @@ int start_pt(u64 val){
 	val |= CTL_USER;
 	val |= TRACE_EN;
 	val |= BRANCH_EN;
-//temp add
-	val |= DIS_RETC; 	
 
 	return wrmsrl_safe(MSR_IA32_PT_CTL, val);
 }
@@ -1534,16 +1537,16 @@ int copy_pt(struct task_struct * tsk){
 	OutputOffset = ((ptr & last32) >> 32) & first32;
 
 	cur_offset = MaskOrTableOffset & OutputOffset;
+
 	next_offset  = tsk->pt_info.pt_offset + cur_offset; 
 	temp_pt_buffer = (char*) __this_cpu_read(pt_buffer_cpu);
 
-//temp add
-	if(size == 0 )
+
+	if(cur_offset == 0 ){
 		return 0;
+	}
 
-	printk("COPY_PT: Process %d pt size %lx and size to load %lx\n", tsk->pid, tsk->pt_info.pt_offset, cur_offset);
-//end adding temp
-
+	printk("SWITCH: Process %d PT offset %lx and next PT buffer offset %lx\n", tsk->pid, cur_offset, next_offset);
 
 	//if the buffer is short, then overwrite the beginning.
 	if( next_offset > size){
@@ -1562,6 +1565,8 @@ int copy_pt(struct task_struct * tsk){
 		clac();
 		tsk->pt_info.pt_offset += cur_offset;
 	}
+
+	memset(temp_pt_buffer, 0, SIZE_BY_ORDER(pt_buffer_order));
 	return 0;
 } 
 
@@ -1610,7 +1615,12 @@ static void probe_sched_process_exec(void * arg, struct task_struct *p, pid_t ol
 			return; 
 		}
 		__this_cpu_write(pt_running, true);
-	}	
+	}else{
+		//!!! The status may have been set to STOP at the execution entry point!!!
+		p->pt_info.pt_buffer = NULL;
+		p->pt_info.pt_offset = 0;
+		p->pt_info.pt_status = PT_NO;
+	}
 }
 
 
@@ -1655,7 +1665,7 @@ return_pt:
 
 static void probe_sched_fork(void *ignore, struct task_struct *parent, struct task_struct * child){
 
-	if(parent->pt_info.pt_status == PT_NO || parent->pt_info.pt_buffer == NULL)
+	if(parent->pt_info.pt_status == PT_STOP || parent->pt_info.pt_status == PT_NO)
 		return;
 
 	child->pt_info.pt_buffer = NULL; //parent->pt_info.pt_buffer; 
@@ -1681,7 +1691,8 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 			clac();	
 
 			child->pt_info.pt_buffer = parent->pt_info.pt_buffer; 
-			child->pt_info.pt_status = parent->pt_info.pt_status;
+			//child should not be stopped
+			child->pt_info.pt_status = parent->pt_info.pt_status & (~PT_STOP);
 			child->pt_info.pt_offset = parent->pt_info.pt_offset; 
 
 			parent->pt_info.pt_buffer = (void*)mapaddr;	
@@ -1702,27 +1713,17 @@ static void probe_sched_fork(void *ignore, struct task_struct *parent, struct ta
 
 		if( !IS_ERR((void*)mapaddr) ){
 
+			stac();
+			if(parent->pt_info.pt_status & PT_OVERWRITE)
+				memcpy((void*)mapaddr, parent->pt_info.pt_buffer, size);
+			else
+				memcpy((void*)mapaddr, parent->pt_info.pt_buffer, PAGE_ALIGN(parent->pt_info.pt_offset));
+			clac();
+
 			child->pt_info.pt_buffer = (void*) mapaddr; 
-
-			if(copy_ok(parent) && copy_ok(child)){
-
-				stac();
-//				memcpy((void*) mapaddr, parent->pt_info.pt_buffer, size);
-
-				if(parent->pt_info.pt_status & PT_OVERWRITE)
-					memcpy((void*)mapaddr, parent->pt_info.pt_buffer, size);
-				else
-					memcpy((void*)mapaddr, parent->pt_info.pt_buffer, PAGE_ALIGN(parent->pt_info.pt_offset));
-
-				clac();
-				
-				child->pt_info.pt_status = parent->pt_info.pt_status;
-				child->pt_info.pt_offset = parent->pt_info.pt_offset; 
-			}
-			else{
-				child->pt_info.pt_status = PT_START;
-				child->pt_info.pt_offset = 0;
-			}
+			//child should not be stopped	
+			child->pt_info.pt_status = parent->pt_info.pt_status & (~PT_STOP);
+			child->pt_info.pt_offset = parent->pt_info.pt_offset; 
 		}
 	}				
 }

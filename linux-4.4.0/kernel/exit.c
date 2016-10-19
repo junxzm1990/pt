@@ -657,7 +657,8 @@ void do_exit(long code)
 
 
 	//added by JX
-	current->pt_info.pt_status |= PT_STOP;	
+	if(current->pt_info.pt_status != PT_NO)
+		current->pt_info.pt_status |= PT_STOP;	
 	//end adding by JX
 
 	TASKS_RCU(int tasks_rcu_i);

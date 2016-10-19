@@ -3122,9 +3122,7 @@ static void __sched notrace __schedule(bool preempt)
 
 	
 //added by JX
-	if(prev->pt_info.pt_status != PT_NO){	
-		trace_sched_switch(preempt, prev, next);
-	}
+	trace_sched_switch(preempt, prev, next);
 //end adding by JX
 
 

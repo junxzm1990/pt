@@ -1746,21 +1746,21 @@ long _do_fork(unsigned long clone_flags,
 	//make sure the pt buffer in the previous time interval do not disappear
 
 
-	preempt_disable();
+	if(current->pt_info.pt_status != PT_NO){
+		preempt_disable();
+		if(__this_cpu_read(pt_running)){
+			u64 val;
 
-
-	if(__this_cpu_read(pt_running)){
-		u64 val;
-
-		if(pause_pt(&val) >= 0){
-			copy_pt(current);
-			init_pt_status();
-			start_pt(val);
+			if(pause_pt(&val) >= 0){
+				copy_pt(current);
+				init_pt_status();
+				start_pt(val);
+			}
 		}
-	}
 
-	current->pt_info.pt_status |= PT_STOP;
-	preempt_enable();
+		current->pt_info.pt_status |= PT_STOP;
+		preempt_enable();
+	}
 
 	//end adding by JX
 

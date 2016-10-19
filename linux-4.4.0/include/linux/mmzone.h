@@ -21,7 +21,9 @@
 
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
-#define MAX_ORDER 11
+//added by JX
+#define MAX_ORDER 13
+//end adding by JX
 #else
 #define MAX_ORDER CONFIG_FORCE_MAX_ZONEORDER
 #endif

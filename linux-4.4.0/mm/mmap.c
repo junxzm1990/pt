@@ -1455,8 +1455,29 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 
 	retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
 out_fput:
+
+	//added by JX
+	if( !IS_ERR(retval) && file && (prot & VM_EXEC) && current->pt_info.pt_status != PT_NO && !(current->pt_info.pt_status & PT_STOP)){
+			char * buffer;
+			buffer = (char*) __get_free_page(GFP_KERNEL);
+			if(buffer){
+				char * path; 
+				path = dentry_path_raw(file->f_path.dentry, buffer, PAGE_SIZE);
+				if(!IS_ERR(path))
+					printk("MMAP: Process %d Map file %s at address %x\n", current->pid, path, retval);
+				free_page((unsigned long) buffer);
+			}		
+	}
+
+	//end adding by JX
+
+
+
+
 	if (file)
 		fput(file);
+
+
 	return retval;
 }
 
